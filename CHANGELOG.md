@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-01-31
+
+### Fixed
+
+- Fixed compilation error in `tls_integration.rs` where client ownership wasn't properly transferred to `query()` method
+- Removed unnecessary `mut` qualifier from stream variable
+- Resolved unused variable warnings in benchmark utilities
+- Improved benchmark code efficiency with `Vec::resize()` instead of repeated `push()` calls
+
 ## [0.1.0] - 2026-01-13
 
 ### Added
@@ -82,4 +91,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed** for any bug fixes
 - **Security** for vulnerability fixes
 
+[0.1.1]: https://github.com/fraiseql/fraiseql-wire/releases/tag/v0.1.1
 [0.1.0]: https://github.com/fraiseql/fraiseql-wire/releases/tag/v0.1.0
