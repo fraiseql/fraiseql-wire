@@ -52,10 +52,7 @@ mod tls_integration {
         };
 
         // Create TLS configuration
-        let tls_config = match TlsConfig::builder()
-            .verify_hostname(!insecure)
-            .build()
-        {
+        let tls_config = match TlsConfig::builder().verify_hostname(!insecure).build() {
             Ok(cfg) => cfg,
             Err(e) => {
                 eprintln!("Failed to build TLS config: {}", e);
@@ -97,10 +94,7 @@ mod tls_integration {
         };
 
         // Create TLS config that allows self-signed certs (for testing)
-        let tls_config = match TlsConfig::builder()
-            .verify_hostname(!insecure)
-            .build()
-        {
+        let tls_config = match TlsConfig::builder().verify_hostname(!insecure).build() {
             Ok(cfg) => cfg,
             Err(e) => {
                 eprintln!("Failed to build TLS config: {}", e);
@@ -132,11 +126,12 @@ mod tls_integration {
     #[ignore] // Requires PostgreSQL with TLS enabled
     async fn test_tls_config_builder() {
         // This test verifies that the TLS builder API works correctly
-        let config = TlsConfig::builder()
-            .verify_hostname(true)
-            .build();
+        let config = TlsConfig::builder().verify_hostname(true).build();
 
-        assert!(config.is_ok(), "TLS config builder should create valid config");
+        assert!(
+            config.is_ok(),
+            "TLS config builder should create valid config"
+        );
         println!("✓ TLS config builder works correctly");
     }
 
@@ -152,10 +147,7 @@ mod tls_integration {
             }
         };
 
-        let tls_config = match TlsConfig::builder()
-            .verify_hostname(!insecure)
-            .build()
-        {
+        let tls_config = match TlsConfig::builder().verify_hostname(!insecure).build() {
             Ok(cfg) => cfg,
             Err(e) => {
                 eprintln!("Failed to build TLS config: {}", e);
@@ -211,10 +203,7 @@ mod tls_integration {
             }
         };
 
-        let tls_config = match TlsConfig::builder()
-            .verify_hostname(!insecure)
-            .build()
-        {
+        let tls_config = match TlsConfig::builder().verify_hostname(!insecure).build() {
             Ok(cfg) => cfg,
             Err(e) => {
                 eprintln!("Failed to build TLS config: {}", e);
@@ -271,15 +260,11 @@ mod tls_integration {
     #[test]
     fn test_tls_hostname_verification_setting() {
         // Strict verification (production)
-        let strict_config = TlsConfig::builder()
-            .verify_hostname(true)
-            .build();
+        let strict_config = TlsConfig::builder().verify_hostname(true).build();
         assert!(strict_config.is_ok(), "Strict TLS config should be valid");
 
         // Lenient for self-signed certs (development)
-        let dev_config = TlsConfig::builder()
-            .verify_hostname(false)
-            .build();
+        let dev_config = TlsConfig::builder().verify_hostname(false).build();
         assert!(dev_config.is_ok(), "Dev TLS config should be valid");
 
         println!("✓ TLS hostname verification settings work");
