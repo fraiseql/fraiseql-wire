@@ -114,7 +114,7 @@ mod tls_integration {
         match result {
             Ok(client) => {
                 // Verify connection is functional
-                let mut stream = client.query::<Value>("pg_version").execute().await;
+                let stream = client.query::<Value>("pg_version").execute().await;
                 assert!(stream.is_ok(), "Query execution failed after TLS auth");
                 println!("✓ TLS with password authentication succeeded");
             }
@@ -186,7 +186,7 @@ mod tls_integration {
         );
 
         // Try to use each connection
-        for (i, client) in connections.iter().enumerate() {
+        for (i, client) in connections.into_iter().enumerate() {
             match client.query::<Value>("pg_version").execute().await {
                 Ok(mut stream) => {
                     let _result = stream.next().await;
