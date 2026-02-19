@@ -6,3 +6,8 @@ Cargo.lock
 .DS_Store
 .idea/
 .vscode/
+
+# Fuzz artifacts
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/

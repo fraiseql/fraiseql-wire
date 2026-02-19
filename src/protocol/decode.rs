@@ -5,6 +5,12 @@ use super::message::{AuthenticationMessage, BackendMessage, ErrorFields, FieldDe
 use bytes::{Bytes, BytesMut};
 use std::io;
 
+/// Maximum message length (1 GB), matching PostgreSQL's own `PQ_LARGE_MESSAGE_LIMIT`.
+///
+/// Any message whose length field exceeds this value is rejected before allocation
+/// to prevent denial-of-service via crafted length headers.
+const MAX_MESSAGE_LENGTH: usize = 1_073_741_824;
+
 /// Decode a backend message from BytesMut without cloning
 ///
 /// This version decodes in-place from a mutable BytesMut buffer and returns
@@ -27,6 +33,16 @@ pub fn decode_message(data: &mut BytesMut) -> io::Result<(BackendMessage, usize)
 
     let tag = data[0];
     let len = i32::from_be_bytes([data[1], data[2], data[3], data[4]]) as usize;
+
+    if len > MAX_MESSAGE_LENGTH {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "message length {} exceeds maximum allowed {}",
+                len, MAX_MESSAGE_LENGTH
+            ),
+        ));
+    }
 
     if data.len() < len + 1 {
         return Err(io::Error::new(
@@ -358,6 +374,18 @@ mod tests {
             _ => panic!("expected Authentication::Ok"),
         }
         assert_eq!(consumed, 9); // 1 tag + 4 len + 4 auth type
+    }
+
+    #[test]
+    fn test_decode_rejects_oversized_message() {
+        // Length field = MAX_MESSAGE_LENGTH + 1 (as i32 big-endian)
+        let oversized_len = (super::MAX_MESSAGE_LENGTH as i32) + 1;
+        let len_bytes = oversized_len.to_be_bytes();
+        let mut data = BytesMut::from(&[b'D', len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]][..]);
+
+        let err = decode_message(&mut data).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("exceeds maximum"));
     }
 
     #[test]

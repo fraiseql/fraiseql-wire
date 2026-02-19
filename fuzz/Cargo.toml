@@ -1,0 +1,28 @@
+[package]
+name = "fraiseql-wire-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+bytes = "1"
+fraiseql-wire = { path = ".." }
+
+[[bin]]
+name = "fuzz_decode_message"
+path = "fuzz_targets/fuzz_decode_message.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_scram_parse"
+path = "fuzz_targets/fuzz_scram_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_streaming_decode"
+path = "fuzz_targets/fuzz_streaming_decode.rs"
+doc = false
