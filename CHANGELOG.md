@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-02-19
+
+### Added
+
+- TLS support with `sslmode` connection string parameter (disable/require/verify-ca/verify-full)
+- SSLRequest protocol negotiation for Postgres SSL handshake
+- SCRAM-SHA-256 authentication with channel binding (`tls-server-end-point`)
+- Fuzz targets for protocol parsing and `MAX_MESSAGE_LENGTH` safety limit
+- 20 SCRAM edge case and failure path unit tests
+- 6 concurrent connection load tests using `JoinSet`
+
+### Security
+
+- SCRAM-SHA-256 replaces cleartext-only authentication
+- Channel binding prevents MITM attacks on TLS connections
+- `MAX_MESSAGE_LENGTH` limits memory usage from malformed messages
+- Constant-time comparison for server signature verification
+
 ## [0.1.1] - 2026-01-31
 
 ### Fixed
@@ -91,5 +109,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed** for any bug fixes
 - **Security** for vulnerability fixes
 
+[0.1.2]: https://github.com/fraiseql/fraiseql-wire/releases/tag/v0.1.2
 [0.1.1]: https://github.com/fraiseql/fraiseql-wire/releases/tag/v0.1.1
 [0.1.0]: https://github.com/fraiseql/fraiseql-wire/releases/tag/v0.1.0
