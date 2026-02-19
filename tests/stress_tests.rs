@@ -284,6 +284,7 @@ async fn test_stress_huge_chunk_size() {
 
 /// Test authentication with wrong password
 #[tokio::test]
+#[ignore] // Requires Postgres with password auth (not trust)
 async fn test_stress_wrong_credentials() {
     println!("Test: Wrong credentials");
 
