@@ -3,6 +3,9 @@
 /// Protocol version 3.0
 pub const PROTOCOL_VERSION: i32 = 0x0003_0000;
 
+/// SSLRequest code (80877103 = 1234 << 16 | 5679)
+pub const SSL_REQUEST_CODE: i32 = 0x04D2_162F;
+
 /// Message type tags
 pub mod tags {
     /// Authentication request

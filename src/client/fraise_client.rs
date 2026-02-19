@@ -2,7 +2,7 @@
 
 use super::connection_string::{ConnectionInfo, TransportType};
 use super::query_builder::QueryBuilder;
-use crate::connection::{Connection, ConnectionConfig, Transport};
+use crate::connection::{Connection, ConnectionConfig, SslMode, Transport};
 use crate::stream::JsonStream;
 use crate::Result;
 use serde::de::DeserializeOwned;
@@ -46,16 +46,16 @@ impl FraiseClient {
 
         let mut conn = Connection::new(transport);
         let config = info.to_config();
-        conn.startup(&config).await?;
+        conn.startup(&config, None, None).await?;
 
         Ok(Self { conn })
     }
 
     /// Connect to Postgres with TLS encryption
     ///
-    /// TLS is configured independently from the connection string. The connection string
-    /// should contain the hostname and credentials (user/password), while TLS configuration
-    /// is provided separately via `TlsConfig`.
+    /// Uses the PostgreSQL SSLRequest protocol to negotiate TLS. The connection starts
+    /// as plain TCP, sends an SSLRequest message, and upgrades to TLS if the server
+    /// responds with `S`.
     ///
     /// # Examples
     ///
@@ -79,24 +79,22 @@ impl FraiseClient {
     ) -> Result<Self> {
         let info = ConnectionInfo::parse(connection_string)?;
 
-        let transport = match info.transport {
+        match info.transport {
             TransportType::Tcp => {
                 let host = info.host.as_ref().expect("TCP requires host");
                 let port = info.port.expect("TCP requires port");
-                Transport::connect_tcp_tls(host, port, &tls_config).await?
+                // Start with plain TCP — SSLRequest negotiation upgrades to TLS
+                let transport = Transport::connect_tcp(host, port).await?;
+                let mut conn = Connection::new(transport);
+                let mut config = info.to_config();
+                config.sslmode = SslMode::Require;
+                conn.startup(&config, Some(&tls_config), Some(host)).await?;
+                Ok(Self { conn })
             }
-            TransportType::Unix => {
-                return Err(crate::Error::Config(
-                    "TLS is only supported for TCP connections".into(),
-                ));
-            }
-        };
-
-        let mut conn = Connection::new(transport);
-        let config = info.to_config();
-        conn.startup(&config).await?;
-
-        Ok(Self { conn })
+            TransportType::Unix => Err(crate::Error::Config(
+                "TLS is only supported for TCP connections".into(),
+            )),
+        }
     }
 
     /// Connect to Postgres with custom connection configuration
@@ -144,7 +142,7 @@ impl FraiseClient {
         };
 
         let mut conn = Connection::new(transport);
-        conn.startup(&config).await?;
+        conn.startup(&config, None, None).await?;
 
         Ok(Self { conn })
     }
@@ -152,19 +150,20 @@ impl FraiseClient {
     /// Connect to Postgres with both custom configuration and TLS encryption
     ///
     /// This method combines connection configuration (timeouts, keepalive, etc.)
-    /// with TLS encryption for secure connections with advanced options.
+    /// with TLS encryption via the PostgreSQL SSLRequest protocol.
     ///
     /// # Examples
     ///
     /// ```no_run
     /// # async fn example() -> fraiseql_wire::Result<()> {
-    /// use fraiseql_wire::{FraiseClient, connection::{ConnectionConfig, TlsConfig}};
+    /// use fraiseql_wire::{FraiseClient, connection::{ConnectionConfig, TlsConfig, SslMode}};
     /// use std::time::Duration;
     ///
-    /// // Configure connection with timeouts
+    /// // Configure connection with timeouts and TLS
     /// let config = ConnectionConfig::builder("localhost", "mydb")
     ///     .password("secret")
     ///     .statement_timeout(Duration::from_secs(30))
+    ///     .sslmode(SslMode::VerifyFull)
     ///     .build();
     ///
     /// // Configure TLS
@@ -188,23 +187,20 @@ impl FraiseClient {
     ) -> Result<Self> {
         let info = ConnectionInfo::parse(connection_string)?;
 
-        let transport = match info.transport {
+        match info.transport {
             TransportType::Tcp => {
                 let host = info.host.as_ref().expect("TCP requires host");
                 let port = info.port.expect("TCP requires port");
-                Transport::connect_tcp_tls(host, port, &tls_config).await?
+                // Start with plain TCP — SSLRequest negotiation upgrades to TLS
+                let transport = Transport::connect_tcp(host, port).await?;
+                let mut conn = Connection::new(transport);
+                conn.startup(&config, Some(&tls_config), Some(host)).await?;
+                Ok(Self { conn })
             }
-            TransportType::Unix => {
-                return Err(crate::Error::Config(
-                    "TLS is only supported for TCP connections".into(),
-                ));
-            }
-        };
-
-        let mut conn = Connection::new(transport);
-        conn.startup(&config).await?;
-
-        Ok(Self { conn })
+            TransportType::Unix => Err(crate::Error::Config(
+                "TLS is only supported for TCP connections".into(),
+            )),
+        }
     }
 
     /// Start building a query for an entity with automatic deserialization

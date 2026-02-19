@@ -1,6 +1,7 @@
 //! Core connection type
 
 use super::state::ConnectionState;
+use super::tls::SslMode;
 use super::transport::Transport;
 use crate::auth::ScramClient;
 use crate::protocol::{
@@ -41,6 +42,8 @@ pub struct ConnectionConfig {
     pub application_name: Option<String>,
     /// Postgres extra_float_digits setting
     pub extra_float_digits: Option<i32>,
+    /// SSL/TLS mode
+    pub sslmode: SslMode,
 }
 
 impl ConnectionConfig {
@@ -71,6 +74,7 @@ impl ConnectionConfig {
             keepalive_idle: None,
             application_name: None,
             extra_float_digits: None,
+            sslmode: SslMode::default(),
         }
     }
 
@@ -100,6 +104,7 @@ impl ConnectionConfig {
             keepalive_idle: None,
             application_name: None,
             extra_float_digits: None,
+            sslmode: SslMode::default(),
         }
     }
 
@@ -142,6 +147,7 @@ pub struct ConnectionConfigBuilder {
     keepalive_idle: Option<Duration>,
     application_name: Option<String>,
     extra_float_digits: Option<i32>,
+    sslmode: SslMode,
 }
 
 impl ConnectionConfigBuilder {
@@ -217,6 +223,12 @@ impl ConnectionConfigBuilder {
         self
     }
 
+    /// Set SSL/TLS mode
+    pub fn sslmode(mut self, mode: SslMode) -> Self {
+        self.sslmode = mode;
+        self
+    }
+
     /// Build the configuration
     pub fn build(self) -> ConnectionConfig {
         ConnectionConfig {
@@ -229,13 +241,14 @@ impl ConnectionConfigBuilder {
             keepalive_idle: self.keepalive_idle,
             application_name: self.application_name,
             extra_float_digits: self.extra_float_digits,
+            sslmode: self.sslmode,
         }
     }
 }
 
 /// Postgres connection
 pub struct Connection {
-    transport: Transport,
+    transport: Option<Transport>,
     state: ConnectionState,
     read_buf: BytesMut,
     process_id: Option<i32>,
@@ -246,7 +259,7 @@ impl Connection {
     /// Create connection from transport
     pub fn new(transport: Transport) -> Self {
         Self {
-            transport,
+            transport: Some(transport),
             state: ConnectionState::Initial,
             read_buf: BytesMut::with_capacity(8192),
             process_id: None,
@@ -259,9 +272,80 @@ impl Connection {
         self.state
     }
 
+    /// Negotiate TLS upgrade with the server via the SSLRequest protocol.
+    ///
+    /// Sends the 8-byte SSLRequest message and reads the server's single-byte response.
+    /// If the server responds with `S`, the transport is upgraded to TLS.
+    /// If the server responds with `N`, behavior depends on `sslmode`.
+    async fn negotiate_tls(
+        &mut self,
+        tls_config: &super::TlsConfig,
+        hostname: &str,
+        sslmode: SslMode,
+    ) -> Result<()> {
+        self.state.transition(ConnectionState::NegotiatingTls)?;
+
+        // Send SSLRequest
+        let ssl_request = FrontendMessage::SslRequest;
+        self.send_message(&ssl_request).await?;
+
+        // Read single-byte response (S = proceed with TLS, N = reject)
+        let transport = self
+            .transport
+            .as_mut()
+            .expect("transport taken during TLS upgrade");
+        let n = transport.read_buf(&mut self.read_buf).await?;
+        if n == 0 {
+            return Err(Error::ConnectionClosed);
+        }
+
+        let response = self.read_buf[0];
+        self.read_buf.advance(1);
+
+        match response {
+            b'S' => {
+                tracing::debug!("server accepted TLS, upgrading connection");
+                // Take transport out, upgrade to TLS, put it back
+                let transport = self.transport.take().expect("transport not available");
+                self.transport = Some(transport.upgrade_to_tls(tls_config, hostname).await?);
+                tracing::info!("TLS connection established");
+                Ok(())
+            }
+            b'N' => {
+                tracing::debug!("server rejected TLS");
+                Err(Error::Config(format!(
+                    "server does not support TLS (sslmode={})",
+                    sslmode
+                )))
+            }
+            other => Err(Error::Protocol(format!(
+                "unexpected SSLRequest response byte: 0x{:02X}",
+                other
+            ))),
+        }
+    }
+
     /// Perform startup and authentication
-    pub async fn startup(&mut self, config: &ConnectionConfig) -> Result<()> {
+    pub async fn startup(
+        &mut self,
+        config: &ConnectionConfig,
+        tls_config: Option<&super::TlsConfig>,
+        hostname: Option<&str>,
+    ) -> Result<()> {
         async {
+            // TLS negotiation (if requested)
+            if config.sslmode != SslMode::Disable {
+                let tls = tls_config.ok_or_else(|| {
+                    Error::Config(format!(
+                        "sslmode={} requires TlsConfig but none was provided",
+                        config.sslmode
+                    ))
+                })?;
+                let host = hostname
+                    .ok_or_else(|| Error::Config("TLS negotiation requires a hostname".into()))?;
+                self.negotiate_tls(tls, host, config.sslmode).await?;
+            }
+
             self.state.transition(ConnectionState::AwaitingAuth)?;
 
             // Build startup parameters
@@ -520,8 +604,9 @@ impl Connection {
     /// Send a frontend message
     async fn send_message(&mut self, msg: &FrontendMessage) -> Result<()> {
         let buf = encode_message(msg)?;
-        self.transport.write_all(&buf).await?;
-        self.transport.flush().await?;
+        let transport = self.transport.as_mut().expect("transport not available");
+        transport.write_all(&buf).await?;
+        transport.flush().await?;
         Ok(())
     }
 
@@ -535,7 +620,8 @@ impl Connection {
             }
 
             // Need more data
-            let n = self.transport.read_buf(&mut self.read_buf).await?;
+            let transport = self.transport.as_mut().expect("transport not available");
+            let n = transport.read_buf(&mut self.read_buf).await?;
             if n == 0 {
                 return Err(Error::ConnectionClosed);
             }
@@ -546,7 +632,8 @@ impl Connection {
     pub async fn close(mut self) -> Result<()> {
         self.state.transition(ConnectionState::Closed)?;
         let _ = self.send_message(&FrontendMessage::Terminate).await;
-        self.transport.shutdown().await?;
+        let transport = self.transport.as_mut().expect("transport not available");
+        transport.shutdown().await?;
         Ok(())
     }
 
@@ -1058,6 +1145,16 @@ mod tests {
         assert!(config.keepalive_idle.is_none());
         assert!(config.application_name.is_none());
         assert!(config.extra_float_digits.is_none());
+        assert_eq!(config.sslmode, super::SslMode::Disable);
+    }
+
+    #[test]
+    fn test_connection_config_builder_with_sslmode() {
+        let config = ConnectionConfig::builder("mydb", "myuser")
+            .sslmode(super::SslMode::VerifyFull)
+            .build();
+
+        assert_eq!(config.sslmode, super::SslMode::VerifyFull);
     }
 
     // Verify that async functions return Send futures (compile-time check)

@@ -13,5 +13,5 @@ mod transport;
 
 pub use conn::{Connection, ConnectionConfig, ConnectionConfigBuilder};
 pub use state::ConnectionState;
-pub use tls::{parse_server_name, TlsConfig};
+pub use tls::{parse_server_name, SslMode, TlsConfig};
 pub use transport::Transport;

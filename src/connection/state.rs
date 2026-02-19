@@ -8,6 +8,9 @@ pub enum ConnectionState {
     /// Initial state (not connected)
     Initial,
 
+    /// TLS negotiation in progress (SSLRequest sent, awaiting S/N response)
+    NegotiatingTls,
+
     /// Startup sent, awaiting authentication request
     AwaitingAuth,
 
@@ -34,7 +37,9 @@ impl ConnectionState {
 
         matches!(
             (self, next),
-            (Initial, AwaitingAuth)
+            (Initial, NegotiatingTls)
+                | (Initial, AwaitingAuth)
+                | (NegotiatingTls, AwaitingAuth)
                 | (AwaitingAuth, Authenticating)
                 | (Authenticating, Idle)
                 | (Idle, QueryInProgress)
@@ -61,6 +66,7 @@ impl std::fmt::Display for ConnectionState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Initial => write!(f, "initial"),
+            Self::NegotiatingTls => write!(f, "negotiating_tls"),
             Self::AwaitingAuth => write!(f, "awaiting_auth"),
             Self::Authenticating => write!(f, "authenticating"),
             Self::Idle => write!(f, "idle"),
@@ -93,5 +99,25 @@ mod tests {
     fn test_close_from_any_state() {
         let mut state = ConnectionState::QueryInProgress;
         assert!(state.transition(ConnectionState::Closed).is_ok());
+    }
+
+    #[test]
+    fn test_tls_negotiation_transitions() {
+        let mut state = ConnectionState::Initial;
+        assert!(state.transition(ConnectionState::NegotiatingTls).is_ok());
+        assert!(state.transition(ConnectionState::AwaitingAuth).is_ok());
+    }
+
+    #[test]
+    fn test_initial_can_skip_tls_negotiation() {
+        // When sslmode=disable, we skip NegotiatingTls
+        let mut state = ConnectionState::Initial;
+        assert!(state.transition(ConnectionState::AwaitingAuth).is_ok());
+    }
+
+    #[test]
+    fn test_invalid_tls_transition() {
+        let mut state = ConnectionState::Idle;
+        assert!(state.transition(ConnectionState::NegotiatingTls).is_err());
     }
 }

@@ -27,6 +27,9 @@ pub fn encode_message(msg: &FrontendMessage) -> io::Result<BytesMut> {
         FrontendMessage::SaslResponse { data } => {
             encode_sasl_response(&mut buf, data)?;
         }
+        FrontendMessage::SslRequest => {
+            encode_ssl_request(&mut buf)?;
+        }
     }
 
     Ok(buf)
@@ -116,6 +119,12 @@ fn encode_sasl_initial_response(
     Ok(())
 }
 
+fn encode_ssl_request(buf: &mut BytesMut) -> io::Result<()> {
+    buf.put_i32(8); // Length (includes itself)
+    buf.put_i32(super::constants::SSL_REQUEST_CODE);
+    Ok(())
+}
+
 fn encode_sasl_response(buf: &mut BytesMut, data: &[u8]) -> io::Result<()> {
     buf.put_u8(b'p');
     let len_pos = buf.len();
@@ -151,5 +160,18 @@ mod tests {
 
         assert_eq!(buf[0], b'X');
         assert_eq!(buf.len(), 5);
+    }
+
+    #[test]
+    fn test_encode_ssl_request() {
+        let msg = FrontendMessage::SslRequest;
+        let buf = encode_message(&msg).unwrap();
+
+        // SSLRequest is exactly 8 bytes: 4-byte length (8) + 4-byte code (80877103)
+        assert_eq!(buf.len(), 8);
+        // Length = 8 (big-endian)
+        assert_eq!(&buf[0..4], &[0x00, 0x00, 0x00, 0x08]);
+        // SSL request code = 80877103 = 0x04D2162F
+        assert_eq!(&buf[4..8], &[0x04, 0xD2, 0x16, 0x2F]);
     }
 }

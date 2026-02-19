@@ -35,6 +35,9 @@ pub enum FrontendMessage {
         /// SASL client final message data
         data: Vec<u8>,
     },
+
+    /// SSLRequest message (TLS negotiation)
+    SslRequest,
 }
 
 /// Backend message (server → client)

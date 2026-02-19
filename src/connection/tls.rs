@@ -10,6 +10,57 @@ use rustls_pemfile::Item;
 use std::fs;
 use std::sync::Arc;
 
+/// SSL/TLS connection mode matching PostgreSQL `sslmode` parameter.
+///
+/// Controls whether and how TLS is negotiated with the server.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SslMode {
+    /// No TLS (plaintext connection)
+    #[default]
+    Disable,
+    /// TLS required, but server certificate is not verified
+    Require,
+    /// TLS required, server certificate must be signed by a trusted CA
+    VerifyCa,
+    /// TLS required, server certificate must be signed by a trusted CA and hostname must match
+    VerifyFull,
+}
+
+impl SslMode {
+    /// Whether this mode requires certificate verification (CA or full)
+    pub fn requires_verification(&self) -> bool {
+        matches!(self, Self::VerifyCa | Self::VerifyFull)
+    }
+}
+
+impl std::fmt::Display for SslMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Disable => write!(f, "disable"),
+            Self::Require => write!(f, "require"),
+            Self::VerifyCa => write!(f, "verify-ca"),
+            Self::VerifyFull => write!(f, "verify-full"),
+        }
+    }
+}
+
+impl std::str::FromStr for SslMode {
+    type Err = Error;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "disable" => Ok(Self::Disable),
+            "require" => Ok(Self::Require),
+            "verify-ca" => Ok(Self::VerifyCa),
+            "verify-full" => Ok(Self::VerifyFull),
+            _ => Err(Error::Config(format!(
+                "invalid sslmode '{}': expected disable, require, verify-ca, or verify-full",
+                s
+            ))),
+        }
+    }
+}
+
 /// TLS configuration for secure Postgres connections.
 ///
 /// Provides a builder for creating TLS configurations with various certificate handling options.
@@ -403,6 +454,44 @@ mod tests {
         // This might actually succeed or fail depending on rustls version
         // Just ensure it doesn't panic
         let _ = result;
+    }
+
+    #[test]
+    fn test_ssl_mode_from_str() {
+        assert_eq!("disable".parse::<SslMode>().unwrap(), SslMode::Disable);
+        assert_eq!("require".parse::<SslMode>().unwrap(), SslMode::Require);
+        assert_eq!("verify-ca".parse::<SslMode>().unwrap(), SslMode::VerifyCa);
+        assert_eq!(
+            "verify-full".parse::<SslMode>().unwrap(),
+            SslMode::VerifyFull
+        );
+    }
+
+    #[test]
+    fn test_ssl_mode_from_str_invalid() {
+        assert!("invalid".parse::<SslMode>().is_err());
+        assert!("prefer".parse::<SslMode>().is_err());
+    }
+
+    #[test]
+    fn test_ssl_mode_display() {
+        assert_eq!(SslMode::Disable.to_string(), "disable");
+        assert_eq!(SslMode::Require.to_string(), "require");
+        assert_eq!(SslMode::VerifyCa.to_string(), "verify-ca");
+        assert_eq!(SslMode::VerifyFull.to_string(), "verify-full");
+    }
+
+    #[test]
+    fn test_ssl_mode_default() {
+        assert_eq!(SslMode::default(), SslMode::Disable);
+    }
+
+    #[test]
+    fn test_ssl_mode_requires_verification() {
+        assert!(!SslMode::Disable.requires_verification());
+        assert!(!SslMode::Require.requires_verification());
+        assert!(SslMode::VerifyCa.requires_verification());
+        assert!(SslMode::VerifyFull.requires_verification());
     }
 
     #[test]

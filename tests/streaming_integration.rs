@@ -15,7 +15,7 @@ async fn test_streaming_query() {
     let mut conn = Connection::new(transport);
 
     let config = ConnectionConfig::new("postgres", "postgres");
-    conn.startup(&config).await.expect("startup");
+    conn.startup(&config, None, None).await.expect("startup");
 
     // Test with a simple JSON value
     let mut stream = conn

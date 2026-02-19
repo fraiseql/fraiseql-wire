@@ -14,7 +14,7 @@ async fn test_connect_and_query() {
     let mut conn = Connection::new(transport);
 
     let config = ConnectionConfig::new("postgres", "postgres");
-    conn.startup(&config).await.expect("startup");
+    conn.startup(&config, None, None).await.expect("startup");
 
     let messages = conn.simple_query("SELECT 1").await.expect("query");
     assert!(!messages.is_empty());

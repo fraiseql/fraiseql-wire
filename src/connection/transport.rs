@@ -136,6 +136,41 @@ impl Transport {
         Ok(n)
     }
 
+    /// Upgrade a plain TCP transport to TLS after SSLRequest negotiation.
+    ///
+    /// Consumes `self` and returns a new `Transport` with a TLS-encrypted stream.
+    /// Returns an error if the transport is not a plain TCP connection.
+    pub async fn upgrade_to_tls(
+        self,
+        tls_config: &crate::connection::TlsConfig,
+        hostname: &str,
+    ) -> Result<Self> {
+        match self {
+            Transport::Tcp(TcpVariant::Plain(tcp_stream)) => {
+                let server_name = crate::connection::parse_server_name(hostname)?;
+                let server_name =
+                    rustls_pki_types::ServerName::try_from(server_name).map_err(|_| {
+                        crate::Error::Config(format!("Invalid hostname for TLS: {}", hostname))
+                    })?;
+
+                let client_config = tls_config.client_config();
+                let tls_connector = tokio_rustls::TlsConnector::from(client_config);
+                let tls_stream = tls_connector
+                    .connect(server_name, tcp_stream)
+                    .await
+                    .map_err(|e| crate::Error::Config(format!("TLS handshake failed: {}", e)))?;
+
+                Ok(Transport::Tcp(TcpVariant::Tls(tls_stream)))
+            }
+            Transport::Tcp(TcpVariant::Tls(_)) => Err(crate::Error::Config(
+                "transport is already TLS-encrypted".into(),
+            )),
+            Transport::Unix(_) => Err(crate::Error::Config(
+                "cannot upgrade Unix socket to TLS".into(),
+            )),
+        }
+    }
+
     /// Shutdown the transport
     pub async fn shutdown(&mut self) -> Result<()> {
         match self {
@@ -154,5 +189,13 @@ mod tests {
     async fn test_tcp_connect_failure() {
         let result = Transport::connect_tcp("localhost", 9999).await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_upgrade_to_tls_signature_exists() {
+        // Compile-time check that upgrade_to_tls exists with the expected signature
+        fn _assert_method_exists(t: Transport, c: &crate::connection::TlsConfig, h: &str) {
+            let _fut = t.upgrade_to_tls(c, h);
+        }
     }
 }

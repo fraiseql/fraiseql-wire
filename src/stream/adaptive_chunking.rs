@@ -125,11 +125,9 @@ impl AdaptiveChunking {
     /// ```
     pub fn observe(&mut self, items_buffered: usize, capacity: usize) -> Option<usize> {
         // Calculate occupancy percentage (clamped at 100% if buffer exceeds capacity)
-        let pct = if capacity == 0 {
-            0
-        } else {
-            ((items_buffered * 100) / capacity).min(100)
-        };
+        let pct = (items_buffered * 100)
+            .checked_div(capacity)
+            .map_or(0, |v| v.min(100));
 
         // Record this observation
         self.measurements.push_back(Occupancy { percentage: pct });
