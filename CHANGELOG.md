@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-02-19
+
+### Fixed
+
+- `test_stress_wrong_credentials` now reads `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB` from env vars instead of hardcoding `localhost:5432`, so it works against Docker-exposed Postgres instances
+- Added missing `#[ignore]` attribute to `test_stress_wrong_credentials`
+
 ## [0.1.2] - 2026-02-19
 
 ### Added
@@ -109,6 +116,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Fixed** for any bug fixes
 - **Security** for vulnerability fixes
 
+[0.1.3]: https://github.com/fraiseql/fraiseql-wire/releases/tag/v0.1.3
 [0.1.2]: https://github.com/fraiseql/fraiseql-wire/releases/tag/v0.1.2
 [0.1.1]: https://github.com/fraiseql/fraiseql-wire/releases/tag/v0.1.1
 [0.1.0]: https://github.com/fraiseql/fraiseql-wire/releases/tag/v0.1.0
