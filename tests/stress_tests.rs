@@ -288,8 +288,12 @@ async fn test_stress_huge_chunk_size() {
 async fn test_stress_wrong_credentials() {
     println!("Test: Wrong credentials");
 
-    let conn_string = "postgres://postgres:wrongpassword@localhost/fraiseql_test";
-    let result = FraiseClient::connect(conn_string).await;
+    let host = std::env::var("POSTGRES_HOST").unwrap_or_else(|_| "localhost".to_string());
+    let port = std::env::var("POSTGRES_PORT").unwrap_or_else(|_| "5432".to_string());
+    let db = std::env::var("POSTGRES_DB").unwrap_or_else(|_| "fraiseql_test".to_string());
+
+    let conn_string = format!("postgres://wronguser:wrongpassword@{host}:{port}/{db}");
+    let result = FraiseClient::connect(&conn_string).await;
 
     assert!(result.is_err(), "should reject wrong password");
     println!("  Wrong credentials rejected: ✓");
