@@ -5,7 +5,7 @@
 //! * postgres:///database (Unix socket, local)
 //! * postgres:///database?host=/path/to/socket (Unix socket, custom directory)
 
-use crate::connection::ConnectionConfig;
+use crate::connection::{ConnectionConfig, SslMode};
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
 
@@ -26,6 +26,16 @@ pub struct ConnectionInfo {
     pub user: String,
     /// Password
     pub password: Option<String>,
+    /// SSL/TLS mode
+    pub sslmode: SslMode,
+    /// Path to custom CA certificate (from sslrootcert param)
+    pub sslrootcert: Option<String>,
+    /// Path to client certificate (from sslcert param, for mTLS)
+    #[allow(dead_code)]
+    pub sslcert: Option<String>,
+    /// Path to client private key (from sslkey param, for mTLS)
+    #[allow(dead_code)]
+    pub sslkey: Option<String>,
 }
 
 /// Transport type
@@ -143,11 +153,15 @@ impl ConnectionInfo {
             database,
             user: whoami::username(),
             password: None,
+            sslmode: SslMode::Disable,
+            sslrootcert: None,
+            sslcert: None,
+            sslkey: None,
         })
     }
 
     fn parse_tcp(rest: &str) -> Result<Self> {
-        // Format: [user[:password]@]host[:port][/database]
+        // Format: [user[:password]@]host[:port][/database][?params]
         let (auth, rest) = if let Some(pos) = rest.find('@') {
             let (auth, rest) = rest.split_at(pos);
             (Some(auth), &rest[1..])
@@ -164,6 +178,14 @@ impl ConnectionInfo {
             }
         } else {
             (whoami::username(), None)
+        };
+
+        // Split off query string before parsing host/port/database
+        let (rest, query_string) = if let Some(q_pos) = rest.find('?') {
+            let (r, q) = rest.split_at(q_pos);
+            (r, q)
+        } else {
+            (rest, "")
         };
 
         let (host_port, database) = if let Some(pos) = rest.find('/') {
@@ -183,6 +205,16 @@ impl ConnectionInfo {
             (host_port.to_string(), 5432)
         };
 
+        // Parse TLS parameters from query string
+        let sslmode = if let Some(mode_str) = parse_query_param(query_string, "sslmode") {
+            mode_str.parse()?
+        } else {
+            SslMode::default()
+        };
+        let sslrootcert = parse_query_param(query_string, "sslrootcert");
+        let sslcert = parse_query_param(query_string, "sslcert");
+        let sslkey = parse_query_param(query_string, "sslkey");
+
         Ok(Self {
             transport: TransportType::Tcp,
             host: Some(host),
@@ -191,7 +223,38 @@ impl ConnectionInfo {
             database,
             user,
             password,
+            sslmode,
+            sslrootcert,
+            sslcert,
+            sslkey,
         })
+    }
+
+    /// Build a `TlsConfig` from parsed connection parameters.
+    ///
+    /// Returns `None` if `sslmode` is `Disable`.
+    /// Returns `Some(TlsConfig)` for all other modes.
+    pub fn to_tls_config(&self) -> Result<Option<crate::connection::TlsConfig>> {
+        if self.sslmode == SslMode::Disable {
+            return Ok(None);
+        }
+
+        let mut builder = crate::connection::TlsConfig::builder();
+
+        // Custom CA certificate
+        if let Some(ref ca_path) = self.sslrootcert {
+            builder = builder.ca_cert_path(ca_path);
+        }
+
+        // Hostname verification: only for verify-full
+        builder = builder.verify_hostname(self.sslmode == SslMode::VerifyFull);
+
+        // For sslmode=require, accept invalid certs (no verification)
+        if self.sslmode == SslMode::Require {
+            builder = builder.danger_accept_invalid_certs(true);
+        }
+
+        Ok(Some(builder.build()?))
     }
 
     /// Convert to ConnectionConfig
@@ -200,6 +263,7 @@ impl ConnectionInfo {
         if let Some(ref password) = self.password {
             config = config.password(password);
         }
+        config.sslmode = self.sslmode;
         config
     }
 }
@@ -290,6 +354,120 @@ mod tests {
 
         let empty = parse_query_param("", "host");
         assert_eq!(empty, None);
+    }
+
+    #[test]
+    fn test_parse_tcp_with_sslmode() {
+        use crate::connection::SslMode;
+
+        let info =
+            ConnectionInfo::parse("postgres://user:pass@localhost:5432/mydb?sslmode=require")
+                .unwrap();
+        assert_eq!(info.transport, TransportType::Tcp);
+        assert_eq!(info.sslmode, SslMode::Require);
+        assert_eq!(info.database, "mydb");
+    }
+
+    #[test]
+    fn test_parse_tcp_with_sslmode_verify_full() {
+        use crate::connection::SslMode;
+
+        let info = ConnectionInfo::parse("postgres://localhost/mydb?sslmode=verify-full").unwrap();
+        assert_eq!(info.sslmode, SslMode::VerifyFull);
+    }
+
+    #[test]
+    fn test_parse_tcp_without_sslmode_defaults_to_disable() {
+        use crate::connection::SslMode;
+
+        let info = ConnectionInfo::parse("postgres://localhost/mydb").unwrap();
+        assert_eq!(info.sslmode, SslMode::Disable);
+    }
+
+    #[test]
+    fn test_parse_tcp_with_invalid_sslmode() {
+        let result = ConnectionInfo::parse("postgres://localhost/mydb?sslmode=bogus");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_tcp_with_sslrootcert() {
+        let info = ConnectionInfo::parse(
+            "postgres://localhost/mydb?sslmode=verify-ca&sslrootcert=/path/to/ca.pem",
+        )
+        .unwrap();
+        assert_eq!(info.sslrootcert, Some("/path/to/ca.pem".to_string()));
+    }
+
+    #[test]
+    fn test_parse_tcp_with_client_certs() {
+        let info = ConnectionInfo::parse(
+            "postgres://localhost/mydb?sslmode=require&sslcert=/path/cert.pem&sslkey=/path/key.pem",
+        )
+        .unwrap();
+        assert_eq!(info.sslcert, Some("/path/cert.pem".to_string()));
+        assert_eq!(info.sslkey, Some("/path/key.pem".to_string()));
+    }
+
+    #[test]
+    fn test_to_tls_config_require() {
+        use crate::connection::SslMode;
+
+        let info = ConnectionInfo {
+            transport: TransportType::Tcp,
+            host: Some("localhost".to_string()),
+            port: Some(5432),
+            unix_socket: None,
+            database: "mydb".to_string(),
+            user: "user".to_string(),
+            password: None,
+            sslmode: SslMode::Require,
+            sslrootcert: None,
+            sslcert: None,
+            sslkey: None,
+        };
+        let tls = info.to_tls_config().unwrap();
+        assert!(tls.is_some());
+    }
+
+    #[test]
+    fn test_to_tls_config_disable_returns_none() {
+        use crate::connection::SslMode;
+
+        let info = ConnectionInfo {
+            transport: TransportType::Tcp,
+            host: Some("localhost".to_string()),
+            port: Some(5432),
+            unix_socket: None,
+            database: "mydb".to_string(),
+            user: "user".to_string(),
+            password: None,
+            sslmode: SslMode::Disable,
+            sslrootcert: None,
+            sslcert: None,
+            sslkey: None,
+        };
+        let tls = info.to_tls_config().unwrap();
+        assert!(tls.is_none());
+    }
+
+    #[test]
+    fn test_parse_unix_ignores_sslmode() {
+        use crate::connection::SslMode;
+
+        // Even if sslmode is passed in query params, Unix sockets should always be Disable
+        let info = ConnectionInfo::parse("postgres:///mydb?host=/tmp&sslmode=require").unwrap();
+        assert_eq!(info.transport, TransportType::Unix);
+        assert_eq!(info.sslmode, SslMode::Disable);
+    }
+
+    #[test]
+    fn test_to_config_carries_sslmode() {
+        use crate::connection::SslMode;
+
+        let info = ConnectionInfo::parse("postgres://localhost/mydb?sslmode=verify-full").unwrap();
+        let config = info.to_config();
+        assert_eq!(config.sslmode, SslMode::VerifyFull);
     }
 
     #[test]

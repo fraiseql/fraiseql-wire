@@ -31,6 +31,7 @@ impl FraiseClient {
     /// ```
     pub async fn connect(connection_string: &str) -> Result<Self> {
         let info = ConnectionInfo::parse(connection_string)?;
+        let tls_config = info.to_tls_config()?;
 
         let transport = match info.transport {
             TransportType::Tcp => {
@@ -46,7 +47,8 @@ impl FraiseClient {
 
         let mut conn = Connection::new(transport);
         let config = info.to_config();
-        conn.startup(&config, None, None).await?;
+        let hostname = info.host.as_deref();
+        conn.startup(&config, tls_config.as_ref(), hostname).await?;
 
         Ok(Self { conn })
     }
@@ -128,6 +130,8 @@ impl FraiseClient {
         config: ConnectionConfig,
     ) -> Result<Self> {
         let info = ConnectionInfo::parse(connection_string)?;
+        // Build TLS config from the ConnectionConfig's sslmode + connection string cert paths
+        let tls_config = info.to_tls_config()?;
 
         let transport = match info.transport {
             TransportType::Tcp => {
@@ -142,7 +146,8 @@ impl FraiseClient {
         };
 
         let mut conn = Connection::new(transport);
-        conn.startup(&config, None, None).await?;
+        let hostname = info.host.as_deref();
+        conn.startup(&config, tls_config.as_ref(), hostname).await?;
 
         Ok(Self { conn })
     }
