@@ -425,4 +425,262 @@ mod tests {
         assert!(client_final.starts_with("c="));
         assert!(!state.auth_message.is_empty());
     }
+
+    // ── Server First Message Parsing Edge Cases ──────────────────────
+
+    #[test]
+    fn test_parse_server_first_missing_nonce() {
+        let result = parse_server_first("s=c2FsdA==,i=4096");
+        assert!(matches!(result, Err(ScramError::InvalidServerMessage(_))));
+    }
+
+    #[test]
+    fn test_parse_server_first_missing_salt() {
+        let result = parse_server_first("r=nonce,i=4096");
+        assert!(matches!(result, Err(ScramError::InvalidServerMessage(_))));
+    }
+
+    #[test]
+    fn test_parse_server_first_missing_iterations() {
+        let result = parse_server_first("r=nonce,s=c2FsdA==");
+        assert!(matches!(result, Err(ScramError::InvalidServerMessage(_))));
+    }
+
+    #[test]
+    fn test_parse_server_first_empty_string() {
+        let result = parse_server_first("");
+        assert!(matches!(result, Err(ScramError::InvalidServerMessage(_))));
+    }
+
+    #[test]
+    fn test_parse_server_first_empty_values() {
+        let result = parse_server_first("r=,s=,i=");
+        assert!(matches!(result, Err(ScramError::InvalidServerMessage(_))));
+    }
+
+    #[test]
+    fn test_parse_server_first_extra_fields_ignored() {
+        let result = parse_server_first("r=nonce123,x=junk,s=c2FsdA==,i=4096");
+        let (nonce, salt, iterations) = result.unwrap();
+        assert_eq!(nonce, "nonce123");
+        assert_eq!(salt, "c2FsdA==");
+        assert_eq!(iterations, "4096");
+    }
+
+    #[test]
+    fn test_parse_server_first_different_field_order() {
+        let result = parse_server_first("s=c2FsdA==,i=4096,r=nonce123");
+        let (nonce, salt, iterations) = result.unwrap();
+        assert_eq!(nonce, "nonce123");
+        assert_eq!(salt, "c2FsdA==");
+        assert_eq!(iterations, "4096");
+    }
+
+    // ── Nonce Tampering Detection ────────────────────────────────────
+
+    #[test]
+    fn test_client_final_nonce_prefix_mismatch() {
+        let mut client = ScramClient::new("user".to_string(), "pass".to_string());
+        let _first = client.client_first();
+
+        let server_first = format!(
+            "r=TAMPERED_NONCE_server_ext,s={},i=4096",
+            BASE64.encode(b"salty")
+        );
+        let result = client.client_final(&server_first);
+        assert!(matches!(result, Err(ScramError::InvalidServerMessage(_))));
+    }
+
+    #[test]
+    fn test_client_final_nonce_identical_to_client() {
+        let mut client = ScramClient::new("user".to_string(), "pass".to_string());
+        let _first = client.client_first();
+        let client_nonce = client.nonce.clone();
+
+        // Server nonce == client nonce (no extension) — prefix still matches
+        let server_first = format!("r={},s={},i=4096", client_nonce, BASE64.encode(b"salty"));
+        let result = client.client_final(&server_first);
+        assert!(result.is_ok());
+    }
+
+    // ── Invalid Salt and Iterations ──────────────────────────────────
+
+    #[test]
+    fn test_client_final_invalid_base64_salt() {
+        let mut client = ScramClient::new("user".to_string(), "pass".to_string());
+        let _first = client.client_first();
+
+        let server_first = format!("r={}server_ext,s=!!!not-base64!!!,i=4096", client.nonce);
+        let result = client.client_final(&server_first);
+        assert!(matches!(result, Err(ScramError::Base64Error(_))));
+    }
+
+    #[test]
+    fn test_client_final_non_numeric_iterations() {
+        let mut client = ScramClient::new("user".to_string(), "pass".to_string());
+        let _first = client.client_first();
+
+        let server_first = format!(
+            "r={}server_ext,s={},i=abc",
+            client.nonce,
+            BASE64.encode(b"salty")
+        );
+        let result = client.client_final(&server_first);
+        assert!(matches!(result, Err(ScramError::InvalidServerMessage(_))));
+    }
+
+    #[test]
+    fn test_client_final_zero_iterations() {
+        let mut client = ScramClient::new("user".to_string(), "pass".to_string());
+        let _first = client.client_first();
+
+        let server_first = format!(
+            "r={}server_ext,s={},i=0",
+            client.nonce,
+            BASE64.encode(b"salty")
+        );
+        // PBKDF2 accepts 0 iterations — not our job to enforce a minimum
+        let result = client.client_final(&server_first);
+        assert!(result.is_ok());
+    }
+
+    // ── Server Final Message Verification ────────────────────────────
+
+    #[test]
+    fn test_verify_server_final_missing_v_prefix() {
+        let client = ScramClient::new("user".to_string(), "pass".to_string());
+        let state = ScramState {
+            auth_message: b"dummy".to_vec(),
+            server_key: vec![0; 32],
+        };
+        let result = client.verify_server_final("not_a_valid_response", &state);
+        assert!(matches!(result, Err(ScramError::InvalidServerMessage(_))));
+    }
+
+    #[test]
+    fn test_verify_server_final_empty_after_v() {
+        let client = ScramClient::new("user".to_string(), "pass".to_string());
+        let state = ScramState {
+            auth_message: b"dummy".to_vec(),
+            server_key: vec![0; 32],
+        };
+        // "v=" with empty value decodes to 0 bytes, which won't match the 32-byte signature
+        let result = client.verify_server_final("v=", &state);
+        assert!(matches!(result, Err(ScramError::InvalidServerProof(_))));
+    }
+
+    #[test]
+    fn test_verify_server_final_invalid_base64() {
+        let client = ScramClient::new("user".to_string(), "pass".to_string());
+        let state = ScramState {
+            auth_message: b"dummy".to_vec(),
+            server_key: vec![0; 32],
+        };
+        let result = client.verify_server_final("v=!!!invalid!!!", &state);
+        assert!(matches!(result, Err(ScramError::Base64Error(_))));
+    }
+
+    #[test]
+    fn test_verify_server_final_wrong_signature() {
+        let client = ScramClient::new("user".to_string(), "pass".to_string());
+        let state = ScramState {
+            auth_message: b"auth_msg".to_vec(),
+            server_key: vec![0x42; 32],
+        };
+        // Valid base64, but wrong signature bytes
+        let wrong_sig = BASE64.encode(vec![0xFF; 32]);
+        let result = client.verify_server_final(&format!("v={}", wrong_sig), &state);
+        assert!(matches!(result, Err(ScramError::InvalidServerProof(_))));
+    }
+
+    #[test]
+    fn test_verify_server_final_correct_signature() {
+        let mut client = ScramClient::new("user".to_string(), "password".to_string());
+        let _first = client.client_first();
+
+        let server_nonce = format!("{}server_ext", client.nonce);
+        let server_first = format!("r={},s={},i=4096", server_nonce, BASE64.encode(b"salty"));
+
+        let (_client_final, state) = client.client_final(&server_first).unwrap();
+
+        // Compute the real server signature from the state
+        let expected = calculate_server_signature(&state.server_key, &state.auth_message);
+        let server_final = format!("v={}", BASE64.encode(&expected));
+
+        let result = client.verify_server_final(&server_final, &state);
+        assert!(result.is_ok());
+    }
+
+    // ── Constant-Time Comparison Edge Cases ──────────────────────────
+
+    #[test]
+    fn test_constant_time_compare_both_empty() {
+        assert!(constant_time_compare(&[], &[]));
+    }
+
+    #[test]
+    fn test_constant_time_compare_one_empty() {
+        assert!(!constant_time_compare(&[], &[1]));
+    }
+
+    #[test]
+    fn test_constant_time_compare_single_bit_flip() {
+        let a = vec![0b1010_1010; 32];
+        let mut b = a.clone();
+        b[15] ^= 0b0000_0001; // flip one bit
+        assert!(!constant_time_compare(&a, &b));
+    }
+
+    // ── Channel Binding Edge Case ────────────────────────────────────
+
+    #[test]
+    fn test_channel_binding_empty_data() {
+        let mut client = ScramClient::with_channel_binding(
+            "user".to_string(),
+            "pass".to_string(),
+            ChannelBinding::TlsServerEndPoint(vec![]),
+        );
+        let _first = client.client_first();
+
+        let server_nonce = format!("{}server_ext", client.nonce);
+        let server_first = format!("r={},s={},i=4096", server_nonce, BASE64.encode(b"salty"));
+
+        let (client_final, _state) = client.client_final(&server_first).unwrap();
+
+        let c_value = client_final
+            .split(',')
+            .find(|s| s.starts_with("c="))
+            .unwrap()
+            .strip_prefix("c=")
+            .unwrap();
+        let decoded = BASE64.decode(c_value).unwrap();
+        // With empty binding data, the c= field should contain just the header
+        assert_eq!(decoded, b"p=tls-server-end-point,,");
+    }
+
+    // ── Special Characters in Credentials ────────────────────────────
+
+    #[test]
+    fn test_client_final_empty_password() {
+        let mut client = ScramClient::new("user".to_string(), String::new());
+        let _first = client.client_first();
+
+        let server_nonce = format!("{}server_ext", client.nonce);
+        let server_first = format!("r={},s={},i=4096", server_nonce, BASE64.encode(b"salty"));
+
+        let result = client.client_final(&server_first);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_client_final_unicode_credentials() {
+        let mut client = ScramClient::new("héllo".to_string(), "pässwörd™".to_string());
+        let _first = client.client_first();
+
+        let server_nonce = format!("{}server_ext", client.nonce);
+        let server_first = format!("r={},s={},i=4096", server_nonce, BASE64.encode(b"salty"));
+
+        let result = client.client_final(&server_first);
+        assert!(result.is_ok());
+    }
 }
