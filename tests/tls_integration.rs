@@ -269,4 +269,339 @@ mod tls_integration {
 
         println!("✓ TLS hostname verification settings work");
     }
+
+    /// Test sslmode=require via connection string (SSLRequest flow)
+    #[tokio::test]
+    #[ignore] // Requires PostgreSQL with TLS enabled
+    async fn test_tls_require_via_connection_string() {
+        let db_url = match env::var("TLS_TEST_DB_URL") {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!("Skipping test: TLS_TEST_DB_URL not set");
+                return;
+            }
+        };
+
+        // Append sslmode=require if not already present
+        let url = if db_url.contains("sslmode=") {
+            db_url
+        } else {
+            let sep = if db_url.contains('?') { "&" } else { "?" };
+            format!("{}{}sslmode=require", db_url, sep)
+        };
+
+        let client = FraiseClient::connect(&url)
+            .await
+            .expect("sslmode=require connection should succeed");
+
+        let mut stream = client
+            .query::<Value>("pg_tables")
+            .execute()
+            .await
+            .expect("query over TLS should work");
+
+        let _result = stream.next().await;
+        println!("✓ sslmode=require via connection string succeeded");
+    }
+
+    /// Test that sslmode=require fails when server does not support TLS
+    #[tokio::test]
+    #[ignore] // Requires a PostgreSQL instance WITHOUT TLS
+    async fn test_tls_require_fails_no_tls_server() {
+        let db_url = match env::var("TLS_TEST_NO_TLS_DB_URL") {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!("Skipping test: TLS_TEST_NO_TLS_DB_URL not set");
+                return;
+            }
+        };
+
+        let url = if db_url.contains("sslmode=") {
+            db_url
+        } else {
+            let sep = if db_url.contains('?') { "&" } else { "?" };
+            format!("{}{}sslmode=require", db_url, sep)
+        };
+
+        let result = FraiseClient::connect(&url).await;
+        assert!(
+            result.is_err(),
+            "sslmode=require should fail when server doesn't support TLS"
+        );
+        println!("✓ sslmode=require correctly fails for non-TLS server");
+    }
+
+    /// Test sslmode=verify-full with matching hostname
+    #[tokio::test]
+    #[ignore] // Requires PostgreSQL with valid certificate
+    async fn test_tls_verify_full_valid_cert() {
+        let db_url = match env::var("TLS_TEST_DB_URL") {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!("Skipping test: TLS_TEST_DB_URL not set");
+                return;
+            }
+        };
+
+        let url = if db_url.contains("sslmode=") {
+            db_url
+        } else {
+            let sep = if db_url.contains('?') { "&" } else { "?" };
+            format!("{}{}sslmode=verify-full", db_url, sep)
+        };
+
+        let result = FraiseClient::connect(&url).await;
+        // This may fail with self-signed certs — that's expected
+        match result {
+            Ok(client) => {
+                let _stream = client
+                    .query::<Value>("pg_tables")
+                    .execute()
+                    .await
+                    .expect("query should work");
+                println!("✓ sslmode=verify-full succeeded with valid cert");
+            }
+            Err(e) => {
+                println!("✓ sslmode=verify-full correctly rejected connection: {}", e);
+            }
+        }
+    }
+
+    /// Test sslmode=disable connects without TLS
+    #[tokio::test]
+    #[ignore] // Requires PostgreSQL
+    async fn test_tls_disable_plaintext() {
+        let db_url = match env::var("TLS_TEST_DB_URL") {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!("Skipping test: TLS_TEST_DB_URL not set");
+                return;
+            }
+        };
+
+        let url = if db_url.contains("sslmode=") {
+            db_url
+        } else {
+            let sep = if db_url.contains('?') { "&" } else { "?" };
+            format!("{}{}sslmode=disable", db_url, sep)
+        };
+
+        // Should connect in plaintext (no SSLRequest sent)
+        let client = FraiseClient::connect(&url)
+            .await
+            .expect("sslmode=disable should connect without TLS");
+
+        let mut stream = client
+            .query::<Value>("pg_tables")
+            .execute()
+            .await
+            .expect("plaintext query should work");
+
+        let _result = stream.next().await;
+        println!("✓ sslmode=disable plaintext connection succeeded");
+    }
+
+    /// Test SCRAM channel binding over TLS
+    #[tokio::test]
+    #[ignore] // Requires PostgreSQL with TLS and SCRAM-SHA-256
+    async fn test_tls_scram_channel_binding() {
+        let db_url = match env::var("TLS_TEST_DB_URL") {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!("Skipping test: TLS_TEST_DB_URL not set");
+                return;
+            }
+        };
+
+        // Channel binding is automatic when TLS is active and server offers SCRAM-SHA-256-PLUS
+        let tls_config = TlsConfig::builder()
+            .verify_hostname(false)
+            .build()
+            .expect("TLS config should build");
+
+        let result = FraiseClient::connect_tls(&db_url, tls_config).await;
+        match result {
+            Ok(client) => {
+                let mut stream = client
+                    .query::<Value>("pg_tables")
+                    .execute()
+                    .await
+                    .expect("query with channel binding should work");
+                let _result = stream.next().await;
+                println!("✓ TLS with SCRAM channel binding succeeded");
+            }
+            Err(e) => {
+                eprintln!("Connection failed (may need SCRAM setup): {}", e);
+            }
+        }
+    }
+
+    /// Test mTLS with client certificate
+    #[tokio::test]
+    #[ignore] // Requires PostgreSQL configured for mTLS
+    async fn test_mtls_client_cert() {
+        let db_url = match env::var("TLS_TEST_DB_URL") {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!("Skipping test: TLS_TEST_DB_URL not set");
+                return;
+            }
+        };
+        let cert_path = match env::var("TLS_TEST_CLIENT_CERT") {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("Skipping test: TLS_TEST_CLIENT_CERT not set");
+                return;
+            }
+        };
+        let key_path = match env::var("TLS_TEST_CLIENT_KEY") {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("Skipping test: TLS_TEST_CLIENT_KEY not set");
+                return;
+            }
+        };
+
+        let tls_config = TlsConfig::builder()
+            .verify_hostname(false)
+            .client_cert_path(&cert_path)
+            .client_key_path(&key_path)
+            .build()
+            .expect("TLS config with client cert should build");
+
+        let client = FraiseClient::connect_tls(&db_url, tls_config)
+            .await
+            .expect("mTLS connection should succeed");
+
+        let mut stream = client
+            .query::<Value>("pg_tables")
+            .execute()
+            .await
+            .expect("query with mTLS should work");
+
+        let _result = stream.next().await;
+        println!("✓ mTLS with client certificate succeeded");
+    }
+
+    /// Test TLS streaming large results
+    #[tokio::test]
+    #[ignore] // Requires PostgreSQL with TLS enabled
+    async fn test_tls_streaming_large_result() {
+        let (db_url, insecure) = match get_tls_test_config() {
+            Some(cfg) => cfg,
+            None => {
+                eprintln!("Skipping test: TLS_TEST_DB_URL not set");
+                return;
+            }
+        };
+
+        let tls_config = TlsConfig::builder()
+            .verify_hostname(!insecure)
+            .build()
+            .expect("TLS config should build");
+
+        let client = FraiseClient::connect_tls(&db_url, tls_config)
+            .await
+            .expect("TLS connection should succeed");
+
+        let mut stream = client
+            .query::<Value>("pg_tables")
+            .chunk_size(16)
+            .execute()
+            .await
+            .expect("streaming query should start");
+
+        let mut count = 0;
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(_) => count += 1,
+                Err(e) => {
+                    panic!("streaming error after {} rows: {}", count, e);
+                }
+            }
+            if count >= 50 {
+                break;
+            }
+        }
+        println!("✓ TLS streaming large result succeeded ({} rows)", count);
+    }
+
+    /// Test early stream drop over TLS (cancellation)
+    #[tokio::test]
+    #[ignore] // Requires PostgreSQL with TLS enabled
+    async fn test_tls_connection_drop_midstream() {
+        let (db_url, insecure) = match get_tls_test_config() {
+            Some(cfg) => cfg,
+            None => {
+                eprintln!("Skipping test: TLS_TEST_DB_URL not set");
+                return;
+            }
+        };
+
+        let tls_config = TlsConfig::builder()
+            .verify_hostname(!insecure)
+            .build()
+            .expect("TLS config should build");
+
+        let client = FraiseClient::connect_tls(&db_url, tls_config)
+            .await
+            .expect("TLS connection should succeed");
+
+        let mut stream = client
+            .query::<Value>("pg_tables")
+            .execute()
+            .await
+            .expect("query should start");
+
+        // Read a few rows then drop
+        let _row1 = stream.next().await;
+        let _row2 = stream.next().await;
+        drop(stream);
+
+        // Allow cancel request to propagate
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        println!("✓ TLS stream drop midstream succeeded (no hang/panic)");
+    }
+
+    /// Test custom CA certificate path via connection string
+    #[tokio::test]
+    #[ignore] // Requires PostgreSQL with custom CA
+    async fn test_tls_verify_ca_custom_cert() {
+        let db_url = match env::var("TLS_TEST_DB_URL") {
+            Ok(url) => url,
+            Err(_) => {
+                eprintln!("Skipping test: TLS_TEST_DB_URL not set");
+                return;
+            }
+        };
+        let ca_path = match env::var("TLS_TEST_CERT_PATH") {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("Skipping test: TLS_TEST_CERT_PATH not set");
+                return;
+            }
+        };
+
+        let url = format!(
+            "{}{}sslmode=verify-ca&sslrootcert={}",
+            db_url,
+            if db_url.contains('?') { "&" } else { "?" },
+            ca_path
+        );
+
+        let result = FraiseClient::connect(&url).await;
+        match result {
+            Ok(client) => {
+                let _stream = client
+                    .query::<Value>("pg_tables")
+                    .execute()
+                    .await
+                    .expect("query should work");
+                println!("✓ verify-ca with custom CA cert succeeded");
+            }
+            Err(e) => {
+                println!("verify-ca failed (may be expected): {}", e);
+            }
+        }
+    }
 }

@@ -31,21 +31,29 @@ let client = FraiseClient::connect("postgres:///mydb").await?;
 
 #### For Production Deployments
 
-**Current Status** (v0.1.0): TLS support not yet implemented.
+**TLS is fully supported** via the PostgreSQL SSLRequest protocol:
 
-**Temporary Workaround**:
-1. **Use Unix sockets** if Postgres and application are on the same machine
-2. **VPN or private network** to Postgres server
-3. **SSH tunnel** to Postgres:
-   ```bash
-   ssh -N -L 5432:localhost:5432 user@remote-host
-   ```
+```rust
+// sslmode=require via connection string (recommended)
+let client = FraiseClient::connect("postgres://host/db?sslmode=require").await?;
 
-**Permanent Solution** (Phase 8):
-- TLS support will be added in future release
-- Watch ROADMAP.md for implementation status
+// Explicit TLS configuration
+let tls = TlsConfig::builder()
+    .verify_hostname(true)
+    .build()?;
+let client = FraiseClient::connect_tls("postgres://host/db", tls).await?;
+```
 
-⚠️ **Do NOT** use fraiseql-wire with TCP connections in production until TLS is implemented.
+Supported `sslmode` values:
+- `disable` — no encryption (default, suitable for Unix sockets)
+- `require` — TLS required, no certificate verification
+- `verify-ca` — TLS required, server certificate verified against CA
+- `verify-full` — TLS required, CA verification + hostname match
+
+Additional TLS features:
+- **SCRAM-SHA-256 channel binding** (`tls-server-end-point`) — automatic when server supports `SCRAM-SHA-256-PLUS`
+- **Mutual TLS (mTLS)** — client certificate authentication via `sslcert` and `sslkey` connection string parameters
+- **Custom CA** — `sslrootcert` parameter for self-signed or private CA certificates
 
 ---
 
@@ -271,18 +279,14 @@ config = config.password(&std::env::var("DB_PASSWORD")?);
 
 ### Authentication
 
-- **Cleartext passwords only** (v0.1.0)
-  - Passwords transmitted in plain text over TCP
-  - ⚠️ Only safe for localhost or VPN-protected connections
-  - TLS support coming in Phase 8
+- **Cleartext password, MD5, and SCRAM-SHA-256** supported
+  - SCRAM-SHA-256 is recommended (`password_encryption = scram-sha-256`)
+  - SCRAM with channel binding (`SCRAM-SHA-256-PLUS`) automatic over TLS
+  - TLS encryption protects credentials in transit
 
 - **No MD5 authentication**
   - Intentionally unsupported (MD5 is cryptographically broken)
   - Use Postgres with MD5 disabled (`password_encryption = scram-sha-256`)
-
-- **No SCRAM authentication** (v0.1.0)
-  - Coming in Phase 8
-  - Will be more secure than cleartext
 
 ### Query Capabilities
 
@@ -313,7 +317,7 @@ Before deploying fraiseql-wire to production, ensure:
 - [ ] **Connection strings**: Never hardcoded or checked into git
 - [ ] **Queries**: Validated for SQL injection (whitelist/Rust predicates)
 - [ ] **Logging**: No passwords in logs or error messages
-- [ ] **TLS plan**: Plan for TLS implementation when available
+- [ ] **TLS**: Enable `sslmode=verify-full` for remote connections
 - [ ] **Dependencies**: Run `cargo audit` regularly
 - [ ] **Access control**: Postgres permissions restrict user privileges
 - [ ] **Monitoring**: Log and alert on authentication failures

@@ -160,6 +160,10 @@ impl std::fmt::Debug for TlsConfig {
 /// Provides a fluent API for constructing TLS configurations with custom settings.
 pub struct TlsConfigBuilder {
     ca_cert_path: Option<String>,
+    /// Path to client certificate file (PEM format, for mTLS)
+    pub(crate) client_cert_path: Option<String>,
+    /// Path to client private key file (PEM format, for mTLS)
+    pub(crate) client_key_path: Option<String>,
     verify_hostname: bool,
     danger_accept_invalid_certs: bool,
     danger_accept_invalid_hostnames: bool,
@@ -169,6 +173,8 @@ impl Default for TlsConfigBuilder {
     fn default() -> Self {
         Self {
             ca_cert_path: None,
+            client_cert_path: None,
+            client_key_path: None,
             verify_hostname: true,
             danger_accept_invalid_certs: false,
             danger_accept_invalid_hostnames: false,
@@ -257,6 +263,22 @@ impl TlsConfigBuilder {
         self
     }
 
+    /// Set the path to a client certificate file (PEM format) for mutual TLS.
+    ///
+    /// Must be paired with `client_key_path`.
+    pub fn client_cert_path(mut self, path: impl Into<String>) -> Self {
+        self.client_cert_path = Some(path.into());
+        self
+    }
+
+    /// Set the path to a client private key file (PEM format) for mutual TLS.
+    ///
+    /// Must be paired with `client_cert_path`.
+    pub fn client_key_path(mut self, path: impl Into<String>) -> Self {
+        self.client_key_path = Some(path.into());
+        self
+    }
+
     /// Build the TLS configuration.
     ///
     /// # Errors
@@ -297,12 +319,36 @@ impl TlsConfigBuilder {
             store
         };
 
-        // Create ClientConfig using the correct API for rustls 0.23
-        let client_config = Arc::new(
-            ClientConfig::builder()
-                .with_root_certificates(root_store)
-                .with_no_client_auth(),
-        );
+        // Create ClientConfig with or without client auth (mTLS)
+        let client_config = match (&self.client_cert_path, &self.client_key_path) {
+            (Some(cert_path), Some(key_path)) => {
+                let certs = self.load_client_certs(cert_path)?;
+                let key = self.load_client_key(key_path)?;
+                Arc::new(
+                    ClientConfig::builder()
+                        .with_root_certificates(root_store)
+                        .with_client_auth_cert(certs, key)
+                        .map_err(|e| {
+                            Error::Config(format!("invalid client certificate/key: {}", e))
+                        })?,
+                )
+            }
+            (Some(_), None) => {
+                return Err(Error::Config(
+                    "client certificate provided without client key (sslkey)".to_string(),
+                ));
+            }
+            (None, Some(_)) => {
+                return Err(Error::Config(
+                    "client key provided without client certificate (sslcert)".to_string(),
+                ));
+            }
+            (None, None) => Arc::new(
+                ClientConfig::builder()
+                    .with_root_certificates(root_store)
+                    .with_no_client_auth(),
+            ),
+        };
 
         Ok(TlsConfig {
             ca_cert_path: self.ca_cert_path,
@@ -311,6 +357,81 @@ impl TlsConfigBuilder {
             danger_accept_invalid_hostnames: self.danger_accept_invalid_hostnames,
             client_config,
         })
+    }
+
+    /// Load client certificate chain from a PEM file.
+    fn load_client_certs(
+        &self,
+        cert_path: &str,
+    ) -> Result<Vec<rustls_pki_types::CertificateDer<'static>>> {
+        let cert_data = fs::read(cert_path).map_err(|e| {
+            Error::Config(format!(
+                "failed to read client certificate '{}': {}",
+                cert_path, e
+            ))
+        })?;
+
+        let mut reader = std::io::Cursor::new(&cert_data);
+        let mut certs = Vec::new();
+
+        loop {
+            match rustls_pemfile::read_one(&mut reader) {
+                Ok(Some(Item::X509Certificate(cert))) => certs.push(cert),
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_) => {
+                    return Err(Error::Config(format!(
+                        "failed to parse client certificate from '{}'",
+                        cert_path
+                    )));
+                }
+            }
+        }
+
+        if certs.is_empty() {
+            return Err(Error::Config(format!(
+                "no valid certificates found in '{}'",
+                cert_path
+            )));
+        }
+
+        Ok(certs)
+    }
+
+    /// Load client private key from a PEM file.
+    fn load_client_key(&self, key_path: &str) -> Result<rustls_pki_types::PrivateKeyDer<'static>> {
+        let key_data = fs::read(key_path).map_err(|e| {
+            Error::Config(format!("failed to read client key '{}': {}", key_path, e))
+        })?;
+
+        let mut reader = std::io::Cursor::new(&key_data);
+
+        loop {
+            match rustls_pemfile::read_one(&mut reader) {
+                Ok(Some(Item::Pkcs1Key(key))) => {
+                    return Ok(rustls_pki_types::PrivateKeyDer::Pkcs1(key));
+                }
+                Ok(Some(Item::Pkcs8Key(key))) => {
+                    return Ok(rustls_pki_types::PrivateKeyDer::Pkcs8(key));
+                }
+                Ok(Some(Item::Sec1Key(key))) => {
+                    return Ok(rustls_pki_types::PrivateKeyDer::Sec1(key));
+                }
+                Ok(Some(_)) => {}
+                Ok(None) => break,
+                Err(_) => {
+                    return Err(Error::Config(format!(
+                        "failed to parse client key from '{}'",
+                        key_path
+                    )));
+                }
+            }
+        }
+
+        Err(Error::Config(format!(
+            "no valid private key found in '{}'",
+            key_path
+        )))
     }
 
     /// Load a custom CA certificate from a PEM file.
@@ -492,6 +613,40 @@ mod tests {
         assert!(!SslMode::Require.requires_verification());
         assert!(SslMode::VerifyCa.requires_verification());
         assert!(SslMode::VerifyFull.requires_verification());
+    }
+
+    #[test]
+    fn test_tls_config_builder_with_client_cert_methods() {
+        // Verify builder API accepts client cert and key paths
+        let builder = TlsConfig::builder()
+            .client_cert_path("/path/to/client.pem")
+            .client_key_path("/path/to/client-key.pem");
+        assert_eq!(
+            builder.client_cert_path.as_deref(),
+            Some("/path/to/client.pem")
+        );
+        assert_eq!(
+            builder.client_key_path.as_deref(),
+            Some("/path/to/client-key.pem")
+        );
+    }
+
+    #[test]
+    fn test_tls_config_builder_client_cert_without_key_fails() {
+        // Providing a client cert without a key should fail
+        let result = TlsConfig::builder()
+            .client_cert_path("/path/to/client.pem")
+            .build();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_tls_config_builder_client_key_without_cert_fails() {
+        // Providing a client key without a cert should fail
+        let result = TlsConfig::builder()
+            .client_key_path("/path/to/client-key.pem")
+            .build();
+        assert!(result.is_err());
     }
 
     #[test]

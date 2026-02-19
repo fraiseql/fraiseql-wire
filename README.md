@@ -221,6 +221,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### TLS Connections
+
+```rust
+use fraiseql_wire::FraiseClient;
+use fraiseql_wire::connection::TlsConfig;
+
+// Via connection string (recommended)
+let client = FraiseClient::connect("postgres://host/db?sslmode=require").await?;
+
+// With verify-full and custom CA
+let client = FraiseClient::connect(
+    "postgres://host/db?sslmode=verify-full&sslrootcert=/path/to/ca.pem"
+).await?;
+
+// With explicit TLS config
+let tls = TlsConfig::builder()
+    .verify_hostname(true)
+    .build()?;
+let client = FraiseClient::connect_tls("postgres://host/db", tls).await?;
+
+// Mutual TLS (client certificate)
+let tls = TlsConfig::builder()
+    .client_cert_path("/path/to/client.pem")
+    .client_key_path("/path/to/client-key.pem")
+    .build()?;
+let client = FraiseClient::connect_tls("postgres://host/db", tls).await?;
+```
+
+Supported `sslmode` values: `disable`, `require`, `verify-ca`, `verify-full`.
+
 ### Running Examples
 
 See `examples/` directory:

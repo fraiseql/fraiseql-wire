@@ -38,6 +38,15 @@ impl fmt::Display for ScramError {
 
 impl std::error::Error for ScramError {}
 
+/// Channel binding type for SCRAM authentication
+#[derive(Clone, Debug)]
+pub enum ChannelBinding {
+    /// No channel binding
+    None,
+    /// tls-server-end-point: SHA-256 hash of the server's DER-encoded certificate
+    TlsServerEndPoint(Vec<u8>),
+}
+
 /// Internal state needed for SCRAM authentication
 #[derive(Clone, Debug)]
 pub struct ScramState {
@@ -52,12 +61,21 @@ pub struct ScramClient {
     username: String,
     password: String,
     nonce: String,
+    channel_binding: ChannelBinding,
 }
 
 impl ScramClient {
-    /// Create a new SCRAM client
+    /// Create a new SCRAM client without channel binding
     pub fn new(username: String, password: String) -> Self {
-        // Generate random client nonce (24 bytes, base64 encoded = 32 chars)
+        Self::with_channel_binding(username, password, ChannelBinding::None)
+    }
+
+    /// Create a new SCRAM client with channel binding
+    pub fn with_channel_binding(
+        username: String,
+        password: String,
+        channel_binding: ChannelBinding,
+    ) -> Self {
         let mut rng = rand::thread_rng();
         let nonce_bytes: Vec<u8> = (0..24).map(|_| rng.gen()).collect();
         let nonce = BASE64.encode(&nonce_bytes);
@@ -66,14 +84,21 @@ impl ScramClient {
             username,
             password,
             nonce,
+            channel_binding,
         }
     }
 
-    /// Generate client first message (no proof)
+    /// GS2 header for the SCRAM exchange
+    fn gs2_header(&self) -> &'static str {
+        match self.channel_binding {
+            ChannelBinding::None => "n",
+            ChannelBinding::TlsServerEndPoint(_) => "p=tls-server-end-point",
+        }
+    }
+
+    /// Generate client first message
     pub fn client_first(&self) -> String {
-        // Format: n,a=<username>,r=<nonce>
-        // RFC 5802: Channels binding doesn't apply, so use "n" (no channel binding)
-        format!("n,a={},r={}", self.username, self.nonce)
+        format!("{},a={},r={}", self.gs2_header(), self.username, self.nonce)
     }
 
     /// Process server first message and generate client final message
@@ -98,8 +123,21 @@ impl ScramClient {
             .parse::<u32>()
             .map_err(|_| ScramError::InvalidServerMessage("invalid iteration count".to_string()))?;
 
-        // Build channel binding (no channel binding for SCRAM-SHA-256)
-        let channel_binding = BASE64.encode(b"n,,");
+        // Build channel binding data for the c= field
+        // RFC 5802: c = base64(gs2-header + channel-binding-data)
+        let gs2_cbind = match &self.channel_binding {
+            ChannelBinding::None => {
+                // No channel binding: c = base64("n,,")
+                b"n,,".to_vec()
+            }
+            ChannelBinding::TlsServerEndPoint(data) => {
+                // tls-server-end-point: c = base64("p=tls-server-end-point,," + cb_data)
+                let mut buf = b"p=tls-server-end-point,,".to_vec();
+                buf.extend_from_slice(data);
+                buf
+            }
+        };
+        let channel_binding = BASE64.encode(&gs2_cbind);
 
         // Build client final without proof
         let client_final_without_proof = format!("c={},r={}", channel_binding, server_nonce);
@@ -317,6 +355,57 @@ mod tests {
         let a = b"test";
         let b_arr = b"test_longer";
         assert!(!constant_time_compare(a, b_arr));
+    }
+
+    #[test]
+    fn test_client_first_with_channel_binding() {
+        let client = ScramClient::with_channel_binding(
+            "alice".to_string(),
+            "secret".to_string(),
+            ChannelBinding::TlsServerEndPoint(vec![1, 2, 3, 4]),
+        );
+        let first = client.client_first();
+        // GS2 header should be p=tls-server-end-point
+        assert!(first.starts_with("p=tls-server-end-point,a=alice,r="));
+    }
+
+    #[test]
+    fn test_client_first_without_channel_binding() {
+        let client = ScramClient::new("alice".to_string(), "secret".to_string());
+        let first = client.client_first();
+        // GS2 header should be n (no channel binding)
+        assert!(first.starts_with("n,a=alice,r="));
+    }
+
+    #[test]
+    fn test_client_final_with_channel_binding() {
+        // Channel binding data should be included in the c= field
+        let binding_data = vec![0xDE, 0xAD, 0xBE, 0xEF];
+        let mut client = ScramClient::with_channel_binding(
+            "user".to_string(),
+            "password".to_string(),
+            ChannelBinding::TlsServerEndPoint(binding_data.clone()),
+        );
+        let _first = client.client_first();
+
+        let server_nonce = format!("{}server_part", client.nonce);
+        let server_first = format!("r={},s={},i=4096", server_nonce, BASE64.encode(b"salty"));
+
+        let (client_final, _state) = client.client_final(&server_first).unwrap();
+
+        // The c= field should contain base64 of the GS2 header + channel binding data
+        let c_value = client_final
+            .split(',')
+            .find(|s| s.starts_with("c="))
+            .unwrap()
+            .strip_prefix("c=")
+            .unwrap();
+        let decoded = BASE64.decode(c_value).unwrap();
+        // Should start with "p=tls-server-end-point,,"
+        let header = b"p=tls-server-end-point,,";
+        assert!(decoded.starts_with(header));
+        // And end with the channel binding data
+        assert_eq!(&decoded[header.len()..], &binding_data);
     }
 
     #[test]

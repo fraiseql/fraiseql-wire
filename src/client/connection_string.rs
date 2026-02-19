@@ -31,10 +31,8 @@ pub struct ConnectionInfo {
     /// Path to custom CA certificate (from sslrootcert param)
     pub sslrootcert: Option<String>,
     /// Path to client certificate (from sslcert param, for mTLS)
-    #[allow(dead_code)]
     pub sslcert: Option<String>,
     /// Path to client private key (from sslkey param, for mTLS)
-    #[allow(dead_code)]
     pub sslkey: Option<String>,
 }
 
@@ -252,6 +250,14 @@ impl ConnectionInfo {
         // For sslmode=require, accept invalid certs (no verification)
         if self.sslmode == SslMode::Require {
             builder = builder.danger_accept_invalid_certs(true);
+        }
+
+        // Client certificate for mTLS
+        if let Some(ref cert_path) = self.sslcert {
+            builder = builder.client_cert_path(cert_path);
+        }
+        if let Some(ref key_path) = self.sslkey {
+            builder = builder.client_key_path(key_path);
         }
 
         Ok(Some(builder.build()?))

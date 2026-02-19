@@ -2,6 +2,7 @@
 
 use crate::Result;
 use bytes::BytesMut;
+use sha2::Digest;
 use std::path::Path;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UnixStream};
@@ -59,6 +60,24 @@ impl TcpVariant {
             TcpVariant::Tls(stream) => stream.shutdown().await?,
         }
         Ok(())
+    }
+
+    /// Extract the `tls-server-end-point` channel binding data from a TLS connection.
+    ///
+    /// Returns `None` for plain TCP connections.
+    /// For TLS connections, returns the SHA-256 hash of the server's DER-encoded certificate.
+    pub fn channel_binding_data(&self) -> Option<Vec<u8>> {
+        match self {
+            TcpVariant::Plain(_) => None,
+            TcpVariant::Tls(stream) => {
+                let (_tcp, conn) = stream.get_ref();
+                let certs = conn.peer_certificates()?;
+                let server_cert = certs.first()?;
+                // tls-server-end-point: SHA-256 hash of the DER-encoded server certificate
+                let hash = sha2::Sha256::digest(server_cert.as_ref());
+                Some(hash.to_vec())
+            }
+        }
     }
 }
 
@@ -178,6 +197,16 @@ impl Transport {
             Transport::Unix(stream) => stream.shutdown().await?,
         }
         Ok(())
+    }
+
+    /// Extract channel binding data from the transport (if TLS is active).
+    ///
+    /// Returns `None` for plain TCP or Unix socket connections.
+    pub fn channel_binding_data(&self) -> Option<Vec<u8>> {
+        match self {
+            Transport::Tcp(variant) => variant.channel_binding_data(),
+            Transport::Unix(_) => None,
+        }
     }
 }
 

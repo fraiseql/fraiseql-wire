@@ -381,7 +381,8 @@ mod tests {
         // Length field = MAX_MESSAGE_LENGTH + 1 (as i32 big-endian)
         let oversized_len = (super::MAX_MESSAGE_LENGTH as i32) + 1;
         let len_bytes = oversized_len.to_be_bytes();
-        let mut data = BytesMut::from(&[b'D', len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]][..]);
+        let mut data =
+            BytesMut::from(&[b'D', len_bytes[0], len_bytes[1], len_bytes[2], len_bytes[3]][..]);
 
         let err = decode_message(&mut data).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);

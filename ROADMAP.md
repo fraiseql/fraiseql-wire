@@ -225,9 +225,7 @@ Add requested features to v0.1.0 while maintaining API stability and backward co
 
 Based on typical production needs, we recommend prioritizing in this order:
 
-1. **8.1 TLS Support** (Medium effort) - Required for cloud/remote Postgres
-   - Optional: `FraiseClient::connect_tls(config)` alongside existing `connect()`
-   - Release: v0.1.1
+1. ~~**8.1 TLS Support**~~ ✅ **Implemented** — SSLRequest negotiation, sslmode, SCRAM channel binding, mTLS
 
 2. **8.3 Connection Configuration** (Low effort) - Better timeout/keepalive control
    - Optional: `connect_with_config()` alongside existing `connect()`
@@ -289,24 +287,13 @@ let client = pool.get().await?;
 **Effort**: High (significant complexity)
 **Trade-offs**: Separate crate, additional maintenance
 
-#### 8.3 TLS Support
-```rust
-let client = FraiseClient::connect_tls(
-    "postgres://localhost/db",
-    TlsConfig::builder()
-        .ca_cert(...)
-        .build()?
-)
-.await?;
-```
+#### ~~8.3 TLS Support~~ ✅ Implemented
 
-**Why**: Required for cloud/remote Postgres
-**Effort**: Medium (integrate native-tls or rustls)
-**Trade-offs**: Additional dependency, platform-specific issues
+SSLRequest negotiation, `sslmode` (disable/require/verify-ca/verify-full), SCRAM-SHA-256 channel binding (`tls-server-end-point`), mutual TLS (mTLS) with client certificates. Uses rustls (no OpenSSL dependency).
 
-#### 8.4 SCRAM Authentication
-- Current: Cleartext password only
-- Add: SCRAM-SHA-256 (Postgres 10+)
+#### ~~8.4 SCRAM Authentication~~ ✅ Implemented
+
+SCRAM-SHA-256 with automatic channel binding upgrade over TLS.
 
 **Why**: Better security than cleartext
 **Effort**: Medium (complex auth protocol)

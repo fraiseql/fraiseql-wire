@@ -3,6 +3,7 @@
 use super::state::ConnectionState;
 use super::tls::SslMode;
 use super::transport::Transport;
+use crate::auth::scram::ChannelBinding;
 use crate::auth::ScramClient;
 use crate::protocol::{
     decode_message, encode_message, AuthenticationMessage, BackendMessage, FrontendMessage,
@@ -486,27 +487,48 @@ impl Connection {
         mechanisms: &[String],
         config: &ConnectionConfig,
     ) -> Result<()> {
-        // Check if server supports SCRAM-SHA-256
-        if !mechanisms.contains(&"SCRAM-SHA-256".to_string()) {
+        // Determine channel binding and mechanism
+        let channel_binding_data = self
+            .transport
+            .as_ref()
+            .and_then(|t| t.channel_binding_data());
+
+        let (mechanism, channel_binding) = if mechanisms.contains(&"SCRAM-SHA-256-PLUS".to_string())
+        {
+            if let Some(cb_data) = channel_binding_data {
+                (
+                    "SCRAM-SHA-256-PLUS",
+                    ChannelBinding::TlsServerEndPoint(cb_data),
+                )
+            } else {
+                ("SCRAM-SHA-256", ChannelBinding::None)
+            }
+        } else if mechanisms.contains(&"SCRAM-SHA-256".to_string()) {
+            ("SCRAM-SHA-256", ChannelBinding::None)
+        } else {
             return Err(Error::Authentication(format!(
                 "server does not support SCRAM-SHA-256. Available: {}",
                 mechanisms.join(", ")
             )));
-        }
+        };
 
         // Get password
         let password = config.password.as_ref().ok_or_else(|| {
             Error::Authentication("password required for SCRAM authentication".into())
         })?;
 
-        // Create SCRAM client
-        let mut scram = ScramClient::new(config.user.clone(), password.clone());
-        tracing::debug!("initiating SCRAM-SHA-256 authentication");
+        // Create SCRAM client with channel binding support
+        let mut scram = ScramClient::with_channel_binding(
+            config.user.clone(),
+            password.clone(),
+            channel_binding,
+        );
+        tracing::debug!("initiating {} authentication", mechanism);
 
         // Send SaslInitialResponse with client first message
         let client_first = scram.client_first();
         let msg = FrontendMessage::SaslInitialResponse {
-            mechanism: "SCRAM-SHA-256".to_string(),
+            mechanism: mechanism.to_string(),
             data: client_first.into_bytes(),
         };
         self.send_message(&msg).await?;
